@@ -1,11 +1,297 @@
 <!DOCTYPE html>
-<html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>PakePlus</title>
-    </head>
-    <body>
-        PakePlus
-    </body>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>离线图片压缩工具</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<style>
+:root{
+--card:#111827;--border:#1f2937;--text:#e5e7eb;
+--muted:#9ca3af;--accent:#38bdf8
+}
+*{box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto}
+body{
+margin:0;min-height:100vh;
+background:linear-gradient(145deg,#020617,#0f172a);
+display:flex;justify-content:center;align-items:center;color:var(--text)
+}
+.container{
+width:1100px;max-width:95%;
+background:var(--card);border-radius:18px;
+padding:28px;box-shadow:0 30px 80px rgba(0,0,0,.5)
+}
+h1{font-size:22px;margin-bottom:18px}
+
+.upload{
+border:2px dashed var(--border);
+border-radius:14px;padding:24px;text-align:center;
+cursor:pointer;transition:.3s
+}
+.upload:hover{border-color:var(--accent);background:rgba(56,189,248,.05)}
+.upload input{display:none}
+
+.controls{
+display:grid;grid-template-columns:1fr 1fr;
+gap:24px;margin-top:24px
+}
+.control{background:#020617;padding:16px;border-radius:14px}
+label{display:flex;justify-content:space-between;font-size:14px;margin-bottom:8px}
+input[type=range]{width:100%}
+
+/* 单图 */
+.preview{
+display:grid;grid-template-columns:1fr 1fr;
+gap:24px;margin-top:24px
+}
+.box{background:#020617;border-radius:14px;padding:14px}
+.box img{max-width:100%;border-radius:10px}
+.info{font-size:13px;color:var(--muted);margin-top:8px}
+
+/* 多图 */
+.grid{
+margin-top:24px;
+display:grid;
+grid-template-columns:repeat(auto-fill,minmax(220px,1fr));
+gap:18px
+}
+.card{
+position:relative;
+background:#020617;border-radius:14px;padding:12px
+}
+.card img{width:100%;border-radius:10px}
+.meta{font-size:12px;color:var(--muted);margin-top:6px}
+
+/* 删除 & 下载按钮 */
+.remove,.download{
+position:absolute;
+top:8px;
+width:22px;height:22px;
+border-radius:50%;
+background:rgba(0,0,0,.6);
+color:#fff;font-size:13px;
+display:flex;align-items:center;justify-content:center;
+cursor:pointer;opacity:0;transition:.2s
+}
+.remove{right:8px}
+.download{right:36px}
+.card:hover .remove,
+.card:hover .download{opacity:1}
+
+.actions{
+margin-top:24px;display:flex;justify-content:flex-end
+}
+button{
+background:linear-gradient(135deg,#38bdf8,#0ea5e9);
+border:none;color:#020617;
+font-size:14px;padding:10px 22px;
+border-radius:12px;cursor:pointer
+}
+button:disabled{opacity:.4}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+<h1>离线图片压缩工具</h1>
+
+<label class="upload">
+  点击或拖拽图片（可多张）
+  <input type="file" id="fileInput" accept="image/*" multiple>
+</label>
+
+<div class="controls">
+  <div class="control">
+    <label>压缩质量 <span id="qualityVal">80%</span></label>
+    <input type="range" min="1" max="100" value="80" id="quality">
+  </div>
+  <div class="control">
+    <label>输出尺寸 <span id="scaleVal">100%</span></label>
+    <input type="range" min="10" max="100" value="100" id="scale">
+  </div>
+</div>
+
+<!-- 单图 -->
+<div id="singleMode" style="display:none">
+  <div class="preview">
+    <div class="box">
+      <strong>原图</strong>
+      <img id="singleOrig">
+      <div class="info" id="singleOrigInfo"></div>
+    </div>
+    <div class="box">
+      <strong>压缩后</strong>
+      <img id="singleComp">
+      <div class="info" id="singleCompInfo"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 多图 -->
+<div id="multiMode" style="display:none">
+  <div class="grid" id="grid"></div>
+</div>
+
+<div class="actions">
+  <button id="downloadBtn" disabled>下载</button>
+</div>
+</div>
+
+<script>
+const fileInput = document.getElementById('fileInput');
+const quality = document.getElementById('quality');
+const scale = document.getElementById('scale');
+const qualityVal = document.getElementById('qualityVal');
+const scaleVal = document.getElementById('scaleVal');
+
+const singleMode = document.getElementById('singleMode');
+const multiMode = document.getElementById('multiMode');
+const grid = document.getElementById('grid');
+const downloadBtn = document.getElementById('downloadBtn');
+
+const singleOrig = document.getElementById('singleOrig');
+const singleComp = document.getElementById('singleComp');
+const singleOrigInfo = document.getElementById('singleOrigInfo');
+const singleCompInfo = document.getElementById('singleCompInfo');
+
+let items = [];
+let debounceTimer = null;
+
+/* 滑块防抖 */
+quality.oninput = scale.oninput = () => {
+  qualityVal.textContent = quality.value + '%';
+  scaleVal.textContent = scale.value + '%';
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(()=>items.forEach(compress),120);
+};
+
+/* 上传：追加 */
+fileInput.onchange = () => {
+  [...fileInput.files].forEach(file => {
+    const img = new Image();
+    const item = {
+      file,
+      img,
+      origURL: URL.createObjectURL(file),
+      compBlob: null,
+      compURL: null,
+      el: null
+    };
+    img.onload = () => compress(item);
+    img.src = item.origURL;
+    items.push(item);
+  });
+  updateMode();
+};
+
+/* 压缩 */
+function compress(item){
+  const r = scale.value/100;
+  const canvas = document.createElement('canvas');
+  canvas.width = item.img.width * r;
+  canvas.height = item.img.height * r;
+  canvas.getContext('2d').drawImage(item.img,0,0,canvas.width,canvas.height);
+
+  canvas.toBlob(blob=>{
+    if(item.compURL) URL.revokeObjectURL(item.compURL);
+    item.compBlob = blob;
+    item.compURL = URL.createObjectURL(blob);
+    updateUI(item);
+  },'image/jpeg',quality.value/100);
+}
+
+/* 确保卡片存在 */
+function ensureCard(item){
+  if(item.el) return;
+
+  const el = document.createElement('div');
+  el.className = 'card';
+  el.innerHTML = `
+    <div class="remove">✕</div>
+    <div class="download">⬇</div>
+    <img>
+    <div class="meta"></div>
+  `;
+
+  el.querySelector('.remove').onclick = () => {
+    el.remove();
+    items = items.filter(i=>i!==item);
+    updateMode();
+  };
+
+  el.querySelector('.download').onclick = () => download(item);
+
+  el.onmouseenter = ()=>el.querySelector('img').src=item.origURL;
+  el.onmouseleave = ()=>el.querySelector('img').src=item.compURL;
+
+  grid.appendChild(el);
+  item.el = el;
+}
+
+/* 更新 UI */
+function updateUI(item){
+  if(items.length === 1){
+    singleMode.style.display = 'block';
+    multiMode.style.display = 'none';
+    singleOrig.src = item.origURL;
+    singleComp.src = item.compURL;
+    singleOrigInfo.textContent = (item.file.size/1024).toFixed(1)+' KB';
+    singleCompInfo.textContent = (item.compBlob.size/1024).toFixed(1)+' KB';
+
+    downloadBtn.textContent = '下载';
+    downloadBtn.disabled = false;
+    downloadBtn.onclick = ()=>download(item);
+  }else{
+    singleMode.style.display = 'none';
+    multiMode.style.display = 'block';
+
+    // 确保所有卡片存在
+    items.forEach(item=>{
+      ensureCard(item);
+      item.el.querySelector('img').src=item.compURL;
+      item.el.querySelector('.meta').textContent=(item.compBlob.size/1024).toFixed(1)+' KB';
+    });
+
+    downloadBtn.textContent = '全部下载';
+    downloadBtn.disabled = false;
+    downloadBtn.onclick = () => items.forEach(download);
+  }
+}
+
+/* 模式切换 */
+function updateMode(){
+  if(items.length===0){
+    singleMode.style.display='none';
+    multiMode.style.display='none';
+    downloadBtn.disabled = true;
+    return;
+  }
+
+  if(items.length===1){
+    grid.innerHTML='';
+    items[0].el = null;
+    compress(items[0]);
+  }else{
+    items.forEach(item=>{
+      ensureCard(item);
+      if(item.compBlob) updateUI(item);
+    });
+  }
+}
+function download(item){
+  const a = document.createElement('a');
+  a.href = item.compURL;
+  // 保留原文件名 + "_compressed" + 后缀
+  const dotIndex = item.file.name.lastIndexOf('.');
+  const name = dotIndex !== -1
+               ? item.file.name.slice(0,dotIndex) + '_compressed' + item.file.name.slice(dotIndex)
+               : item.file.name + '_compressed';
+  a.download = name;
+  a.click();
+}
+
+</script>
+
+</body>
 </html>
